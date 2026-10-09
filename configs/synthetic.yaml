@@ -1,0 +1,29 @@
+# Smoke test on synthetic NetFlow-v3-style data (python -m stgids.synthetic first).
+name: synthetic
+output_dir: runs/synthetic
+data:
+  csv: data/synthetic_nf_v3.csv
+graph:
+  window_seconds: 60
+  history_k: 4
+features:
+  selection:
+    n_bootstrap: 2
+    sample_size: 10000
+model:
+  hidden: 32
+  heads: 4
+train:
+  epochs: 4
+  patience: 3
+  adv:
+    steps: 3
+    start_epoch: 1
+eval:
+  eps_list: [0.1]
+  pgd_steps: 5
+  deepfool_iters: 5
+  square_iters: 20
+  max_windows: 20
+baselines:
+  epochs: 3

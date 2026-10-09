@@ -1,0 +1,17 @@
+# NF-UNSW-NB15-v3 (University of Queensland NetFlow v3 release).
+# Before the first run, open the CSV header and check the column names below;
+# the pipeline stops with a clear message if a required column is missing.
+name: nf_unsw_nb15_v3
+output_dir: runs/unsw
+data:
+  csv: data/NF-UNSW-NB15-v3.csv
+  time_col: FLOW_START_MILLISECONDS
+  time_unit: ms
+  label_col: Attack
+  benign_label: Benign
+graph:
+  window_seconds: 60
+  history_k: 6
+train:
+  epochs: 30
+seed: 2

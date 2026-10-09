@@ -1,0 +1,16 @@
+# NF-CSE-CIC-IDS2018-v3 (captured on AWS). Large file: set data.max_rows while debugging,
+# and consider window_seconds: 30 if some windows hold too many flows for GPU memory.
+name: nf_cse_cic_ids2018_v3
+output_dir: runs/cic2018
+data:
+  csv: data/NF-CSE-CIC-IDS2018-v3.csv
+  time_col: FLOW_START_MILLISECONDS
+  time_unit: ms
+  label_col: Attack
+  benign_label: Benign
+  max_rows: null
+graph:
+  window_seconds: 60
+  history_k: 6
+train:
+  epochs: 30
