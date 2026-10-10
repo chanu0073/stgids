@@ -125,14 +125,21 @@ def assign_windows(t_ms: np.ndarray, window_seconds: float, t0: float | None = N
     return np.floor((t_ms - t0) / (window_seconds * 1000.0)).astype(np.int64)
 
 
-def chronological_split(window_id: np.ndarray, fractions) -> np.ndarray:
+def chronological_split(window_id: np.ndarray, fractions, block_windows: int | None = None) -> np.ndarray:
     """Return split index per row (0 train, 1 val, 2 test), cutting only between windows.
 
-    A window goes to the split in which the cumulative flow count *before* it falls.
+    Default: a window goes to the split in which the cumulative flow count *before* it falls.
+    Blocked (block_windows=B): the timeline is cut into blocks of B windows and, inside every
+    block, the first windows go to train, the next to val and the last to test (by position).
+    Used for datasets whose attacks each run in one short episode (NF-CSE-CIC-IDS2018), where a
+    global cut would leave whole classes out of train or test.
     """
     f_train, f_val = fractions[0], fractions[0] + fractions[1]
     wins, counts = np.unique(window_id, return_counts=True)
-    before = (np.cumsum(counts) - counts) / counts.sum()
+    if block_windows:
+        before = (wins % block_windows) / block_windows
+    else:
+        before = (np.cumsum(counts) - counts) / counts.sum()
     win_split = np.where(before < f_train, 0, np.where(before < f_val, 1, 2))
     lookup = dict(zip(wins.tolist(), win_split.tolist()))
     return pd.Series(window_id).map(lookup).to_numpy(dtype=np.int64)

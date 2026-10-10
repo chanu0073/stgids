@@ -104,3 +104,35 @@ def test_chronological_split_never_splits_a_window():
     for win in np.unique(w):
         assert len(set(s[w == win])) == 1
     assert np.all(np.diff(s) >= 0), "later windows must never go to an earlier split"
+
+
+def test_blocked_split_puts_every_block_in_all_splits():
+    w = np.repeat(np.arange(90), 3)  # 90 windows -> 3 blocks of 30
+    s = chronological_split(w, [0.7, 0.15, 0.15], block_windows=30)
+    for win in np.unique(w):
+        assert len(set(s[w == win])) == 1, "a window must never be split"
+    per_window = s[::3].reshape(3, 30)
+    for block in per_window:
+        assert list(np.bincount(block, minlength=3)) == [21, 5, 4]
+        assert np.all(np.diff(block) >= 0), "inside a block: train, then val, then test"
+
+
+def test_store_with_blocked_split(tmp_path):
+    from stgids.graphs import SnapshotStore
+    split = np.array([0, 0, 1, 2, 0, 0, 1, 2])  # two blocks of 4 snapshots, one window each
+    sizes = np.array([3, 2, 2, 1, 3, 2, 2, 1])
+    ptr = np.concatenate([[0], np.cumsum(sizes)])
+    n = int(ptr[-1])
+    torch.save({"num_raw": torch.arange(n, dtype=torch.float32)[:, None], "cat": torch.zeros(n, 0),
+                "y": torch.zeros(n, dtype=torch.long), "y_bin": torch.zeros(n, dtype=torch.long),
+                "src": torch.zeros(n, dtype=torch.long), "dst": torch.ones(n, dtype=torch.long),
+                "snap_ptr": torch.as_tensor(ptr), "snap_window": torch.arange(8),
+                "snap_split": torch.as_tensor(split), "meta": {"classes": ["Benign"]}}, tmp_path / "p.pt")
+    store = SnapshotStore(str(tmp_path / "p.pt"), history_k=6)
+    rows = store.flows("train")["num_raw"].flatten().tolist()
+    expect = [r for i in np.flatnonzero(split == 0) for r in range(ptr[i], ptr[i + 1])]
+    assert rows == expect, "train flows must be exactly the train snapshots' flows"
+    # train target 4: history may only contain train snapshots (0, 1), never val/test (2, 3)
+    assert [s.lag for s in store.window(4)] == [4, 3, 0]
+    # test target 7: any past snapshot within K windows is allowed
+    assert [s.lag for s in store.window(7)] == [5, 4, 3, 2, 1, 0]

@@ -54,7 +54,9 @@ def prepare(cfg: dict, reference: str | None = None, out: str | None = None) -> 
     window = D.assign_windows(df["_t_ms"].to_numpy(), gcfg["window_seconds"])
 
     if reference is None:
-        split = D.chronological_split(window, dcfg["split"])
+        # split_block_windows is read with .get() and kept out of DEFAULTS on purpose: adding it there
+        # would change the prepare fingerprint of every existing run
+        split = D.chronological_split(window, dcfg["split"], dcfg.get("split_block_windows"))
         tr = split == 0
         num_names, tcp_cols, cat_cols = D.column_groups(df, dcfg)
         enc = D.CategoricalEncoder(tcp_cols, cat_cols, dcfg["cat_top_k"]).fit(df[tr])

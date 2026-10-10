@@ -6,8 +6,9 @@ directed edge src -> dst carrying the flow's features and label.
 
 A training/eval *sample* is a window of up to K consecutive snapshots ending at
 snapshot t; the model classifies the edges of snapshot t and uses the earlier
-snapshots only as history (they may belong to an earlier split, which is past
-data and uses no labels).
+snapshots only as history (no labels). Val/test targets may use history from any
+split (it is past traffic); train targets use train history only, so with a blocked
+split no val/test traffic is seen during training.
 """
 from __future__ import annotations
 
@@ -72,8 +73,12 @@ class SnapshotStore:
         """Snapshots [.., t] within the last K time windows, oldest first."""
         out = []
         w_t = int(self.win[t])
+        train_target = int(self.split[t]) == SPLITS["train"]
         i = t
         while i >= 0 and w_t - int(self.win[i]) < self.k:
+            if train_target and int(self.split[i]) != SPLITS["train"]:
+                i -= 1  # never show val/test traffic to a training sample
+                continue
             s = self.snapshot(i)
             s = Snapshot(s.num_raw, s.cat, s.src, s.dst, s.hosts, s.y, s.y_bin, lag=w_t - int(self.win[i]))
             out.append(s.to(device) if device is not None else s)
@@ -88,8 +93,12 @@ class SnapshotStore:
         idx = self.targets(split)
         if not idx:
             raise ValueError(f"split {split!r} is empty")
-        a, b = int(self.ptr[idx[0]]), int(self.ptr[idx[-1] + 1])
-        return {"num_raw": self.num_raw[a:b], "cat": self.cat[a:b], "y": self.y[a:b], "y_bin": self.y_bin[a:b]}
+        if idx[-1] - idx[0] + 1 == len(idx):  # one contiguous block (chronological split): views, no copy
+            a, b = int(self.ptr[idx[0]]), int(self.ptr[idx[-1] + 1])
+            return {"num_raw": self.num_raw[a:b], "cat": self.cat[a:b], "y": self.y[a:b], "y_bin": self.y_bin[a:b]}
+        # blocked split: gather the split's snapshots, in time order
+        rows = torch.cat([torch.arange(int(self.ptr[i]), int(self.ptr[i + 1])) for i in idx])
+        return {"num_raw": self.num_raw[rows], "cat": self.cat[rows], "y": self.y[rows], "y_bin": self.y_bin[rows]}
 
     def class_counts(self, split: str = "train") -> torch.Tensor:
         y = self.flows(split)["y"]

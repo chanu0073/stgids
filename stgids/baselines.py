@@ -80,8 +80,8 @@ NETS = {"mlp": MLPNet, "mlp_adv": MLPNet, "bigru": BiGRUNet, "aegru": AEGRUNet}
 def test_flows(store: SnapshotStore, max_windows: int | None) -> dict:
     fl = store.flows("test")
     if max_windows:
-        t = store.targets("test")
-        n = int(store.ptr[t[min(max_windows, len(t)) - 1] + 1] - store.ptr[t[0]])
+        t = store.targets("test")[:max_windows]  # flows(test) lists the test snapshots in this order
+        n = int(sum(int(store.ptr[i + 1] - store.ptr[i]) for i in t))
         fl = {k: v[:n] for k, v in fl.items()}
     return fl
 

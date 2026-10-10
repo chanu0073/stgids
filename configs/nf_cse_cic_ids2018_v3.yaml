@@ -9,6 +9,10 @@ data:
   label_col: Attack
   benign_label: Benign
   max_rows: null
+  # Every attack class runs in one short episode on one day, so a global chronological cut leaves
+  # whole classes out of train or test. Blocked split instead: in every 30-window (30 min) block the
+  # first 70% of windows -> train, next 15% -> val, last 15% -> test (21/5/4 windows).
+  split_block_windows: 30
 graph:
   window_seconds: 60
   history_k: 6
