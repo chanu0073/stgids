@@ -184,20 +184,33 @@ def evaluate_flow_model(name, model, tf, te, cfg, device, tm, attacks: bool, res
     num, cat = te["num_raw"].to(device), te["cat"].to(device)
     y, yb = te["y"].to(device), te["y_bin"].to(device)
     bs = 4096
+    all_rows = torch.arange(len(num), device=device)
+    att_rows = torch.nonzero(yb == 1).squeeze(1)
+    clean_probs = {}
 
-    def predict(adv_fn=None):
-        preds, probs = [], []
-        for b in batches(len(num), bs, False):
+    def probs_of(rows, adv_fn=None):
+        out = []
+        for i in range(0, len(rows), bs):
+            b = rows[i:i + bs]
             fwd = flow_forward(name, model, tf, cat[b])
             if adv_fn is None:
                 with torch.no_grad():
                     logits = fwd("num", num[b])
             else:
                 logits = adv_fn(fwd, b)
-            p = logits.softmax(1)
-            preds.append(p.argmax(1).cpu()); probs.append(p.cpu())
-        pr = torch.cat(probs).numpy()
-        return compute_metrics(te["y"].numpy(), te["y_bin"].numpy(), torch.cat(preds).numpy(), pr, classes)
+            out.append(logits.softmax(1).cpu())
+        return torch.cat(out)
+
+    def predict(adv_fn=None):
+        # flow models score each flow on its own and attacks change only attack flows, so benign
+        # flows keep their clean predictions and only the attack flows are attacked
+        if adv_fn is None or "p" not in clean_probs:
+            clean_probs["p"] = probs_of(all_rows)
+        pr = clean_probs["p"]
+        if adv_fn is not None:
+            pr = pr.clone()
+            pr[att_rows.cpu()] = probs_of(att_rows, adv_fn)
+        return compute_metrics(te["y"].numpy(), te["y_bin"].numpy(), pr.argmax(1).numpy(), pr.numpy(), classes)
 
     if "clean" not in res:
         with Timer() as t:
