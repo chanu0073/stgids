@@ -5,6 +5,9 @@ import torch
 from stgids.adversarial import ConstrainedSpace, ThreatModel, UnconstrainedSpace, pgd, square
 from stgids.config import DEFAULTS
 from stgids.data import chronological_split
+from stgids.detector import DetectAttribute, MonoDetector
+from stgids.graphs import Snapshot
+from stgids.inject import add_flows
 from stgids.losses import FocalLoss
 from stgids.model import scatter_softmax
 
@@ -136,3 +139,66 @@ def test_store_with_blocked_split(tmp_path):
     assert [s.lag for s in store.window(4)] == [4, 3, 0]
     # test target 7: any past snapshot within K windows is allowed
     assert [s.lag for s in store.window(7)] == [5, 4, 3, 2, 1, 0]
+
+
+F_IN = 5  # numeric features of the toy snapshots (identity feature transform, no categoricals)
+TOY_TRANSFORM = {"log_mask": np.zeros(F_IN, bool), "mu": np.zeros(F_IN), "sigma": np.ones(F_IN),
+                 "selected": np.arange(F_IN)}
+
+
+def _snapshot(g, lag, n_flows=30, n_hosts=8, host_pool=20):
+    hosts = torch.randperm(host_pool, generator=g)[:n_hosts].sort().values
+    y = torch.randint(0, 4, (n_flows,), generator=g)
+    return Snapshot(torch.randn(n_flows, F_IN, generator=g), torch.zeros(n_flows, 0, dtype=torch.uint8),
+                    torch.randint(n_hosts, (n_flows,), generator=g), torch.randint(n_hosts, (n_flows,), generator=g),
+                    hosts, y, (y > 0).long(), lag=lag)
+
+
+def _injected(s, g, m=15, host_pool=25):  # random flows, also from / to hosts never seen before
+    return add_flows(s, torch.randint(host_pool, (m,), generator=g), torch.randint(host_pool, (m,), generator=g),
+                     torch.randn(m, F_IN, generator=g) * 5, torch.zeros(m, 0, dtype=torch.uint8))
+
+
+def test_add_flows_keeps_existing_flows():
+    g = torch.Generator().manual_seed(0)
+    s = _snapshot(g, 0)
+    new = _injected(s, g)
+    e = len(s.y)
+    assert torch.all(new.hosts[1:] > new.hosts[:-1]), "hosts must stay sorted and unique"
+    assert torch.equal(new.hosts[new.src[:e]], s.hosts[s.src]) and torch.equal(new.hosts[new.dst[:e]], s.hosts[s.dst])
+    assert torch.equal(new.num_raw[:e], s.num_raw) and torch.equal(new.y[:e], s.y)
+    assert torch.all(new.y_bin[e:] == 0)
+
+
+def test_detector_never_decreases_when_flows_are_added():
+    g = torch.Generator().manual_seed(1)
+    for trial in range(20):
+        torch.manual_seed(trial)
+        det = MonoDetector(F_IN, 3, {"hidden": 8, "context_dim": 4}).double()  # float64: no rounding noise
+        with torch.no_grad():  # random, also large weights: the guarantee must not depend on training
+            for prm in det.parameters():
+                prm.add_(torch.randn_like(prm) * 2)
+        window = [_snapshot(g, lag) for lag in (2, 1, 0)]
+        d0 = det.forward_inputs(window, [s.num_raw.double() for s in window])
+        for hist_too in (False, True):
+            new = [_injected(s, g) if (hist_too or s is window[-1]) else s for s in window]
+            d1 = det.forward_inputs(new, [s.num_raw.double() for s in new])[: len(d0)]
+            assert torch.all(d1 >= d0 - 1e-9 * d0.abs().clamp(min=1)), "adding flows lowered a detection score"
+
+
+def test_detect_attribute_flags_exactly_when_detector_is_positive():
+    g = torch.Generator().manual_seed(2)
+    torch.manual_seed(0)
+    typer = {"arch": "stgids", "hidden": 8, "heads": 2, "gnn_layers": 1, "dropout": 0.0,
+             "temporal": "transformer", "temporal_layers": 1, "detach_history": True}
+    model = DetectAttribute(TOY_TRANSFORM, 4, {"graph": {"history_k": 3}, "model": {
+        "arch": "detect_attribute", "typer": typer, "detector": {"hidden": 8, "context_dim": 4}}}).eval()
+    window = [_snapshot(g, lag) for lag in (2, 1, 0)]
+    with torch.no_grad():
+        xs = [model.tf(s.num_raw, s.cat) for s in window]
+        model.detector.own.bias -= model.detector.forward_inputs(window, xs).median()  # both decisions occur
+        d = model.detector.forward_inputs(window, xs)
+        z = model(window)
+        typ = model.typer(window)[:, 1:].argmax(1) + 1
+    assert (d > 0).any() and (d <= 0).any()
+    assert torch.equal(z.argmax(1), torch.where(d > 0, typ, torch.zeros_like(typ)))

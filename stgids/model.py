@@ -191,18 +191,27 @@ class STGIDS(nn.Module):
         (unconstrained attacks).
         """
         target = window[-1]
-        hist = []
-        for s in window[:-1]:
-            with torch.set_grad_enabled(torch.is_grad_enabled() and not self.detach_history):
-                h, _ = self.spatial(self.inputs(s), s.src, s.dst, s.n_nodes)
-            hist.append((s.hosts, h, s.lag))
         if x_override is not None:
             x = x_override
         elif num_override is not None:
             x = self.tf(num_override, target.cat)
         else:
             x = self.inputs(target)
-        h, e = self.spatial(x, target.src, target.dst, target.n_nodes)
+        with torch.set_grad_enabled(torch.is_grad_enabled() and not self.detach_history):
+            xs = [self.inputs(s) for s in window[:-1]]
+        return self.forward_inputs(window, xs + [x])
+
+    def forward_inputs(self, window: list[Snapshot], xs: list[torch.Tensor],
+                       history_grad: bool = False) -> torch.Tensor:
+        """Logits for every flow of the last snapshot, given the model inputs of every snapshot
+        (used by injection attacks; history_grad lets gradients reach the history inputs)."""
+        target = window[-1]
+        hist = []
+        for s, x in zip(window[:-1], xs[:-1]):
+            with torch.set_grad_enabled(torch.is_grad_enabled() and (history_grad or not self.detach_history)):
+                h, _ = self.spatial(x, s.src, s.dst, s.n_nodes)
+            hist.append((s.hosts, h, s.lag))
+        h, e = self.spatial(xs[-1], target.src, target.dst, target.n_nodes)
         hist.append((target.hosts, h, 0))
         seq, valid = gather_history(target.hosts, hist, self.k, self.d)
         z = self.temporal(seq, valid)
@@ -229,6 +238,10 @@ class EGraphSAGE(nn.Module):
         t = window[-1]
         x = x_override if x_override is not None else self.tf(
             num_override if num_override is not None else t.num_raw, t.cat)
+        return self.forward_inputs(window, [x])
+
+    def forward_inputs(self, window, xs, history_grad=False):
+        t, x = window[-1], xs[-1]  # no temporal part: only the current snapshot is used
         n = t.n_nodes
         h = torch.ones((n, x.shape[1]), device=x.device, dtype=x.dtype)
         s2, d2 = torch.cat([t.src, t.dst]), torch.cat([t.dst, t.src])
@@ -241,6 +254,9 @@ class EGraphSAGE(nn.Module):
 
 def build_model(meta: dict, cfg: dict) -> nn.Module:
     arch = cfg["model"]["arch"]
+    if arch == "detect_attribute":
+        from .detector import DetectAttribute
+        return DetectAttribute(meta["transform"], len(meta["classes"]), cfg)
     cls = {"stgids": STGIDS, "egraphsage": EGraphSAGE}[arch]
     return cls(meta["transform"], len(meta["classes"]), cfg["model"], cfg["graph"]["history_k"])
 

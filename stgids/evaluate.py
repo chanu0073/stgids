@@ -79,7 +79,7 @@ def main():
     data_path = Path(a.data or out / "prepared.pt")
     ckpt = torch.load(ckpt_path, weights_only=False, map_location=device)
     mcfg = ckpt["config"]
-    k = mcfg["graph"]["history_k"] if mcfg["model"]["arch"] == "stgids" else 1
+    k = mcfg["graph"]["history_k"] if mcfg["model"]["arch"] != "egraphsage" else 1
     store = SnapshotStore(str(data_path), history_k=k)
     model = build_model(ckpt["meta"], mcfg).to(device)
     model.load_state_dict(ckpt["state_dict"])

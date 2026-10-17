@@ -14,9 +14,11 @@ import json
 import statistics
 from pathlib import Path
 
-GRAPH_MODELS = ["stgids", "stgids_adv", "egraphsage"]
+GRAPH_MODELS = ["stgids", "stgids_adv", "egraphsage", "stgids_injaug", "stgids_flowdet", "stgids_mono"]
 FLOW_MODELS = ["rf", "xgb", "mlp", "mlp_adv", "bigru", "aegru"]
 NAMES = {"stgids": "Proposed", "stgids_adv": "Proposed + adv. training", "egraphsage": "E-GraphSAGE",
+         "stgids_injaug": "STGIDS + injection augmentation", "stgids_flowdet": "Flow detector + STGIDS types",
+         "stgids_mono": "Monotone detector + STGIDS types",
          "rf": "Random Forest", "xgb": "XGBoost", "mlp": "DNN", "mlp_adv": "DNN + adv. training",
          "bigru": "BiGRU", "aegru": "AE-GRU"}
 

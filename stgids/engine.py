@@ -9,6 +9,7 @@ import torch
 
 from .adversarial import ThreatModel, make_space, pgd
 from .graphs import SnapshotStore
+from .inject import inject_window
 from .losses import build_loss
 from .metrics import compute_metrics, short
 from .model import DGIHead, STGIDS
@@ -84,6 +85,10 @@ def train_model(model, store: SnapshotStore, cfg: dict, device, ckpt_path=None, 
     opt = torch.optim.AdamW(model.parameters(), lr=tcfg["lr"], weight_decay=tcfg["weight_decay"])
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=tcfg["epochs"])
     tm = ThreatModel(cfg["threat_model"], store.meta["num_names"]) if acfg["mode"] != "none" else None
+    # injection augmentation (structural adversarial training as in Galli et al.): read with .get() and
+    # kept out of config.DEFAULTS, so the fingerprints of runs without it do not change.
+    # e.g. {"beta_max": 20, "mode": "hist", "prob": 0.5}
+    inj = tcfg.get("inject_aug")
     targets = store.targets("train")
     best_f1, best_state, bad, history, start, finished = -1.0, None, 0, [], 0, False
 
@@ -116,6 +121,10 @@ def train_model(model, store: SnapshotStore, cfg: dict, device, ckpt_path=None, 
         opt.zero_grad()
         for i, t in enumerate(order):
             window = store.window(t, device)
+            if inj and (window[-1].y_bin == 1).any() and random.random() < inj.get("prob", 0.5):
+                # attacker hosts add 1..beta_max benign-looking flows; the copies are labelled benign
+                gen = torch.Generator(device=device).manual_seed(random.randrange(2 ** 31))
+                window, _ = inject_window(window, random.randint(1, inj["beta_max"]), inj.get("mode", "hist"), gen)
             target = window[-1]
             loss = criterion(model(window), target.y)
             mask = target.y_bin == 1
