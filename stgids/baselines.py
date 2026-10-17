@@ -109,7 +109,13 @@ class TreeWrapper:
         return torch.log(torch.as_tensor(p, dtype=torch.float32, device=x.device) + 1e-9)
 
 
-def train_tree(name, x, y, seed, n_classes):
+# max_delta_step=1 stabilises XGBoost on very imbalanced data: without it, training on
+# CIC-2018 collapsed for some random states (macro-F1 0.28-0.70 on the training data itself)
+XGB_PARAMS = dict(n_estimators=300, max_depth=8, learning_rate=0.1, subsample=0.8, tree_method="hist",
+                  max_delta_step=1)
+
+
+def train_tree(name, x, y, seed, n_classes, device="cpu"):
     keep = y >= 0
     x, y = x[keep], y[keep]
     seen = np.unique(y)
@@ -119,9 +125,10 @@ def train_tree(name, x, y, seed, n_classes):
         m = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=seed, min_samples_leaf=2)
     else:
         from xgboost import XGBClassifier
-        m = XGBClassifier(n_estimators=300, max_depth=8, learning_rate=0.1, subsample=0.8,
-                          tree_method="hist", random_state=seed, n_jobs=-1, verbosity=0)
+        m = XGBClassifier(**XGB_PARAMS, device=device, random_state=seed, n_jobs=-1, verbosity=0)
     m.fit(x, y_enc)
+    if name == "xgb":
+        m.set_params(device="cpu")  # attacks query it with CPU arrays
     return TreeWrapper(m, n_classes, seen)
 
 
@@ -275,13 +282,14 @@ def main():
             LOG.warning(f"unknown baseline {name!r}, skipped")
             continue
         model_path, res_path = out / f"model_{name}.pt", out / f"results_{name}.json"
+        tag = f"|xgb={json.dumps(XGB_PARAMS, sort_keys=True)}" if name == "xgb" else ""  # retrain on change
         if a.fresh:
             model_path.unlink(missing_ok=True)
             res_path.unlink(missing_ok=True)
         set_seed(cfg["seed"])
 
         saved = torch.load(model_path, weights_only=False, map_location=device) if model_path.exists() else None
-        if saved is not None and saved.get("source") == model_src:
+        if saved is not None and saved.get("source") == model_src + tag:
             if name in NETS:
                 model = NETS[name](tf.out_dim, store.n_classes).to(device)
                 model.load_state_dict(saved["model"])
@@ -292,9 +300,9 @@ def main():
         else:
             if name in ("rf", "xgb"):
                 xtr = transform_chunked(tf, tr["num_raw"], tr["cat"], device).cpu().numpy()
-                model = train_tree(name, xtr, tr["y"].numpy(), cfg["seed"], store.n_classes)
+                model = train_tree(name, xtr, tr["y"].numpy(), cfg["seed"], store.n_classes, device.type)
                 del xtr
-                atomic_save({"model": model, "source": model_src}, model_path)
+                atomic_save({"model": model, "source": model_src + tag}, model_path)
             else:
                 model = train_net(name, tf, tr, va, cfg, device, counts, tm)
                 atomic_save({"model": model.state_dict(), "source": model_src}, model_path)
@@ -302,9 +310,9 @@ def main():
         res = {}
         if res_path.exists():
             prev = json.loads(res_path.read_text())
-            if prev.get("_source") == res_src:
+            if prev.get("_source") == res_src + tag:
                 res = prev
-        res["_source"] = res_src
+        res["_source"] = res_src + tag
         res = evaluate_flow_model(name, model, tf, te, cfg, device, tm, not a.no_attacks, res,
                                   lambda r, pth=res_path: atomic_save_json(r, pth))
         atomic_save_json(res, res_path)
