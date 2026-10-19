@@ -18,11 +18,12 @@ import statistics
 from pathlib import Path
 
 MODELS = ["stgids", "stgids_adv", "ablation_no_temporal", "egraphsage", "stgids_injaug", "stgids_flowdet",
-          "stgids_mono"]
+          "stgids_mono", "stgids_injaug_mono"]
 NAMES = {"stgids": "Proposed (STGIDS)", "stgids_adv": "STGIDS + adv. training",
          "ablation_no_temporal": "STGIDS w/o temporal encoder", "egraphsage": "E-GraphSAGE",
          "stgids_injaug": "STGIDS + injection augmentation", "stgids_flowdet": "Flow detector + STGIDS types",
-         "stgids_mono": "Monotone detector + STGIDS types"}
+         "stgids_mono": "Monotone detector + STGIDS types",
+         "stgids_injaug_mono": "Monotone detector + InjAug STGIDS types"}
 SETTINGS = [  # (column label, result key)
     ("Clean", "clean"),
     ("Random hist b=100", "random/hist/beta=100"),
