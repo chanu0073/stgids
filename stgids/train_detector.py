@@ -11,9 +11,13 @@ Usage:
         --typer runs/unsw/stgids/model.pt --set output_dir=runs/unsw/stgids_mono
     # ablation: detector without host context (flow features only)
     ... --set output_dir=runs/unsw/stgids_flowdet detector.context=false
+    # attack types from a neural flow baseline (types cannot be changed by injected flows either)
+    ... --typer runs/unsw/baselines/model_mlp_adv.pt --set output_dir=runs/unsw/mlpadv_mono
 
 Detector settings live in a separate `detector` config section (not in config.DEFAULTS, so the
-fingerprints of existing runs do not change); unset keys take the values of DET_DEFAULTS.
+fingerprints of existing runs do not change); unset keys take the values of DET_DEFAULTS. Optional:
+detector.channels (evidence channels, default 1) and detector.fusion ("detector" | "or", default
+"detector"); they are recorded only when set, so earlier models keep their fingerprints.
 """
 from __future__ import annotations
 
@@ -60,21 +64,25 @@ def inputs(model, window):
 
 @torch.no_grad()
 def typer_cache(model, store, split, device) -> list:
-    """Most likely attack class of the frozen attribution model for every flow of the split."""
+    """Most likely attack class of the frozen attribution model for every flow of the split, and its
+    attack-vs-benign margin (> 0 iff it predicts an attack; used by detector.fusion = "or")."""
     out = []
     for t in store.targets(split):
         w = store.window(t, device)
-        typ = model.typer.forward_inputs(w, inputs(model, w))[:, 1:].argmax(1) + 1
-        out.append((t, typ.cpu(), w[-1].y.cpu(), w[-1].y_bin.cpu()))
+        lg = model.typer.forward_inputs(w, inputs(model, w))
+        margin = lg[:, 1:].max(1).values - lg[:, 0]
+        out.append((t, (lg[:, 1:].argmax(1) + 1).cpu(), margin.cpu(), w[-1].y.cpu(), w[-1].y_bin.cpu()))
     return out
 
 
 @torch.no_grad()
 def system_metrics(model, store, cache, device) -> dict:
     preds, ys, ybs = [], [], []
-    for t, typ, y, yb in cache:
+    for t, typ, margin, y, yb in cache:
         w = store.window(t, device)
         d = model.detector.forward_inputs(w, inputs(model, w)).cpu()
+        if model.fusion == "or":
+            d = torch.maximum(d, margin)
         preds.append(torch.where(d > 0, typ, torch.zeros_like(typ)))
         ys.append(y); ybs.append(yb)
     return compute_metrics(torch.cat(ys).numpy(), torch.cat(ybs).numpy(), torch.cat(preds).numpy(), None,
@@ -95,12 +103,19 @@ def main():
     typer_path = Path(a.typer)
 
     tck = torch.load(typer_path, weights_only=False, map_location="cpu")
-    tcfg = tck["config"]
-    if tcfg["seed"] != cfg["seed"]:
-        LOG.warning(f"seed {cfg['seed']} differs from the attribution model's seed {tcfg['seed']}")
-    sys_cfg = {**copy.deepcopy(tcfg), "seed": cfg["seed"], "output_dir": str(out), "detector": det,
-               "model": {"arch": "detect_attribute", "typer": tcfg["model"],
-                         "detector": {k: det[k] for k in ("context", "hidden", "context_dim")}}}
+    if "config" in tck:  # trained graph model (STGIDS / E-GraphSAGE)
+        base, typer_model = tck["config"], tck["config"]["model"]
+        if base["seed"] != cfg["seed"]:
+            LOG.warning(f"seed {cfg['seed']} differs from the attribution model's seed {base['seed']}")
+    else:  # neural flow baseline of baselines.py: <run>/baselines/model_<name>.pt
+        name = typer_path.stem.removeprefix("model_")
+        if "model" not in tck or name in ("rf", "xgb"):
+            raise SystemExit(f"{typer_path} is neither a graph model nor a neural flow baseline")
+        base, typer_model = cfg, {"arch": "flow", "net": name}
+    det_model = {k: det[k] for k in ("context", "hidden", "context_dim")}
+    det_model.update({k: det[k] for k in ("channels", "fusion") if k in det})
+    sys_cfg = {**copy.deepcopy(base), "seed": cfg["seed"], "output_dir": str(out), "detector": det,
+               "model": {"arch": "detect_attribute", "typer": typer_model, "detector": det_model}}
     fp = "-".join([fingerprint(sys_cfg, ("seed", "model", "graph", "detector")), file_id(data_path),
                    file_id(typer_path)])
     model_path, ckpt_path = out / "model.pt", out / "checkpoint.pt"
@@ -117,13 +132,17 @@ def main():
     save_config(sys_cfg, out / "config.yaml")
     store = SnapshotStore(str(data_path), history_k=sys_cfg["graph"]["history_k"])
     model = build_model(store.meta, sys_cfg).to(device)
-    model.typer.load_state_dict(tck["state_dict"])
+    if "config" in tck:
+        model.typer.load_state_dict(tck["state_dict"])
+    else:
+        model.typer.net.load_state_dict(tck["model"])
     model.typer.eval()
     for prm in model.typer.parameters():
         prm.requires_grad_(False)
     params = list(model.detector.parameters())
-    LOG.info(f"detect-attribute model | detector context={det['context']} | "
-             f"{sum(q.numel() for q in params):,} trainable parameters | attribution model {typer_path}")
+    LOG.info(f"detect-attribute model | detector context={det['context']} channels={det.get('channels', 1)} "
+             f"fusion={det.get('fusion', 'detector')} | {sum(q.numel() for q in params):,} trainable parameters | "
+             f"attribution model {typer_path}")
     opt = torch.optim.AdamW(params, lr=det["lr"], weight_decay=det["weight_decay"])
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=det["epochs"])
     adv = det["adv"]

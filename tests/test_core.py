@@ -174,7 +174,8 @@ def test_detector_never_decreases_when_flows_are_added():
     g = torch.Generator().manual_seed(1)
     for trial in range(20):
         torch.manual_seed(trial)
-        det = MonoDetector(F_IN, 3, {"hidden": 8, "context_dim": 4}).double()  # float64: no rounding noise
+        channels = 1 if trial % 2 else 4  # also with extra learned evidence channels
+        det = MonoDetector(F_IN, 3, {"hidden": 8, "context_dim": 4, "channels": channels}).double()  # float64
         with torch.no_grad():  # random, also large weights: the guarantee must not depend on training
             for prm in det.parameters():
                 prm.add_(torch.randn_like(prm) * 2)
@@ -202,3 +203,29 @@ def test_detect_attribute_flags_exactly_when_detector_is_positive():
         typ = model.typer(window)[:, 1:].argmax(1) + 1
     assert (d > 0).any() and (d <= 0).any()
     assert torch.equal(z.argmax(1), torch.where(d > 0, typ, torch.zeros_like(typ)))
+
+
+def test_flow_types_and_or_fusion_only_add_alerts_under_injection():
+    """With a flow-feature type head, injected flows can move an existing flow only from benign to an
+    attack class: never hide a flagged flow and never change its attack type (also with OR fusion)."""
+    g = torch.Generator().manual_seed(3)
+    for fusion in ("detector", "or"):
+        torch.manual_seed(0)
+        model = DetectAttribute(TOY_TRANSFORM, 4, {"graph": {"history_k": 3}, "model": {
+            "arch": "detect_attribute", "typer": {"arch": "flow", "net": "mlp"},
+            "detector": {"hidden": 8, "context_dim": 4, "channels": 3, "fusion": fusion}}}).double().eval()
+        window = [_snapshot(g, lag) for lag in (2, 1, 0)]
+        new = [_injected(s, g, m=40) for s in window]
+        xs = [s.num_raw.double() for s in window]
+        with torch.no_grad():
+            for prm in model.detector.parameters():
+                prm.add_(torch.randn_like(prm))
+            # shift both models so that each flags only part of the flows (otherwise nothing can change)
+            model.detector.own.bias -= model.detector.forward_inputs(window, xs).quantile(0.7)
+            lg = model.typer.forward_inputs(window, xs)
+            model.typer.net.net[-1].bias[0] += (lg[:, 1:].max(1).values - lg[:, 0]).quantile(0.7)
+            p0 = model.forward_inputs(window, xs).argmax(1)
+            p1 = model.forward_inputs(new, [s.num_raw.double() for s in new]).argmax(1)[: len(p0)]
+        assert (p0 == 0).any() and (p0 != 0).any()
+        changed = p1 != p0
+        assert torch.all(p0[changed] == 0), "a flagged flow was hidden or relabelled by injected flows"

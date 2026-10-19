@@ -257,6 +257,9 @@ def build_model(meta: dict, cfg: dict) -> nn.Module:
     if arch == "detect_attribute":
         from .detector import DetectAttribute
         return DetectAttribute(meta["transform"], len(meta["classes"]), cfg)
+    if arch == "flow":  # flow baseline used as the attribution model of a detect-attribute model
+        from .detector import FlowTyper
+        return FlowTyper(meta["transform"], len(meta["classes"]), cfg["model"]["net"])
     cls = {"stgids": STGIDS, "egraphsage": EGraphSAGE}[arch]
     return cls(meta["transform"], len(meta["classes"]), cfg["model"], cfg["graph"]["history_k"])
 
