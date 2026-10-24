@@ -19,7 +19,7 @@ from pathlib import Path
 
 MODELS = ["stgids", "stgids_adv", "ablation_no_temporal", "egraphsage", "stgids_injaug", "stgids_flowdet",
           "stgids_mono", "stgids_injaug_mono", "stgids_injaug_mono8", "stgids_mono8", "stgids_mono8_or",
-          "mlpadv_mono8"]
+          "mlpadv_mono8", "flow_mlp", "flow_mlp_adv", "flow_bigru", "flow_aegru"]
 NAMES = {"stgids": "Proposed (STGIDS)", "stgids_adv": "STGIDS + adv. training",
          "ablation_no_temporal": "STGIDS w/o temporal encoder", "egraphsage": "E-GraphSAGE",
          "stgids_injaug": "STGIDS + injection augmentation", "stgids_flowdet": "Flow detector + STGIDS types",
@@ -28,7 +28,9 @@ NAMES = {"stgids": "Proposed (STGIDS)", "stgids_adv": "STGIDS + adv. training",
          "stgids_injaug_mono8": "Monotone detector (8 ch.) + InjAug STGIDS types",
          "stgids_mono8": "Monotone detector (8 ch.) + STGIDS types",
          "stgids_mono8_or": "Monotone detector (8 ch.) OR STGIDS",
-         "mlpadv_mono8": "Monotone detector (8 ch.) + flow types (DNN adv.)"}
+         "mlpadv_mono8": "Monotone detector (8 ch.) + flow types (DNN adv.)",
+         "flow_mlp": "DNN (flow)", "flow_mlp_adv": "DNN + adv. training (flow)",
+         "flow_bigru": "BiGRU (flow)", "flow_aegru": "AE-GRU (flow)"}
 SETTINGS = [  # (column label, result key)
     ("Clean", "clean"),
     ("Random hist b=100", "random/hist/beta=100"),
