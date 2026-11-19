@@ -14,6 +14,13 @@ With detector.channels = m > 1, m - 1 further learned per-flow scores in [0, 1] 
 flow's own features) are summarised the same way, which keeps the guarantee. tests/test_core.py
 checks it for random weights.
 
+With detector.hard_zero = true (ablation), a flow whose own score is not positive (a(x_f) <= 0, so
+it is not flagged on its own features) adds nothing to any host statistic: its evidence counts as 0
+and it is counted neither in the degree nor in the distinct peers. The mask depends only on the
+flow's own features, so the guarantee still holds. In addition, an added flow can then raise other
+flows' scores only if its own score is positive, i.e. only if it is flagged itself (at threshold 0).
+The cut is a step: a flow counts fully as soon as a > 0, and its counts carry no gradient.
+
 The attack type of a flagged flow is the most likely attack class of the attribution model: a trained
 graph model (STGIDS), or a FlowTyper that sees only the flow's own features, in which case injected
 flows can change neither the detection nor the type of an existing flow (predictions can only move
@@ -29,20 +36,24 @@ import torch.nn.functional as F
 from .graphs import Snapshot
 
 
-def host_stats(s: Snapshot, q: torch.Tensor) -> torch.Tensor:
+def host_stats(s: Snapshot, q: torch.Tensor, keep: torch.Tensor | None = None) -> torch.Tensor:
     """(N, 4m + 4) monotone statistics of every host of snapshot s, given m evidence channels
     q (E, m) >= 0 of its flows: per channel the max and the log-sum over outgoing and incoming
-    flows, then log(1 + degree) and log(1 + distinct peers) in both directions."""
+    flows, then log(1 + degree) and log(1 + distinct peers) in both directions. keep (E,) bool, if
+    given, selects the flows that count; the others add nothing (detector.hard_zero)."""
     q = q[:, None] if q.dim() == 1 else q
     n, m = s.n_nodes, q.shape[1]
     zero = q.new_zeros(n, m)
-    pair = torch.unique(s.src * n + s.dst)
+    pairs, ones = s.src * n + s.dst, q.new_ones(len(q))
+    if keep is not None:
+        q, ones, pairs = q * keep[:, None].to(q.dtype), keep.to(q.dtype), pairs[keep]
+    pair = torch.unique(pairs)
     count = lambda idx, w: torch.log1p(q.new_zeros(n).index_add(0, idx, w))[:, None]  # noqa: E731
     return torch.cat([
         zero.scatter_reduce(0, s.src[:, None].expand(-1, m), q, reduce="amax", include_self=True),
         zero.scatter_reduce(0, s.dst[:, None].expand(-1, m), q, reduce="amax", include_self=True),
         torch.log1p(zero.index_add(0, s.src, q)), torch.log1p(zero.index_add(0, s.dst, q)),
-        count(s.src, q.new_ones(len(q))), count(s.dst, q.new_ones(len(q))),
+        count(s.src, ones), count(s.dst, ones),
         count(pair // n, q.new_ones(len(pair))), count(pair % n, q.new_ones(len(pair))),
     ], 1)
 
@@ -55,6 +66,8 @@ class MonoDetector(nn.Module):
         # evidence channels: the suspicion sigmoid(a) plus channels - 1 learned per-flow scores in
         # [0, 1] (e.g. "scan-like flow"), all computed from the flow's own features only
         self.channels = dcfg.get("channels", 1)
+        # ablation: flows with own score a <= 0 add nothing to the host statistics (see module docstring)
+        self.hard_zero = bool(dcfg.get("hard_zero", False))
         self.n_stats = 4 * self.channels + 4
         self.enc = nn.Sequential(nn.Linear(in_dim, d), nn.GELU(), nn.Linear(d, d), nn.GELU())
         self.own = nn.Linear(d, 1)
@@ -81,11 +94,11 @@ class MonoDetector(nn.Module):
         seq = own.new_zeros(t.n_nodes, self.k, self.n_stats)
         for s, x in zip(window, xs):
             if s is t:
-                q = self.evidence(own, h_t)
+                a, h = own, h_t
             else:
                 h = self.enc(x)
-                q = self.evidence(self.own(h).squeeze(-1), h)
-            st = host_stats(s, q)
+                a = self.own(h).squeeze(-1)
+            st = host_stats(s, self.evidence(a, h), a > 0 if self.hard_zero else None)
             pos = torch.searchsorted(s.hosts, t.hosts).clamp(max=s.hosts.numel() - 1)
             ok = s.hosts[pos] == t.hosts
             seq[ok, self.k - 1 - s.lag] = st[pos[ok]]

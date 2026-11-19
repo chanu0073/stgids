@@ -187,6 +187,39 @@ def test_detector_never_decreases_when_flows_are_added():
             assert torch.all(d1 >= d0 - 1e-9 * d0.abs().clamp(min=1)), "adding flows lowered a detection score"
 
 
+def test_hard_zero_keeps_guarantee_and_ignores_unflagged_added_flows():
+    """detector.hard_zero: adding flows never lowers a score, and added flows whose own score is <= 0
+    (not flagged on their own features) change no existing score at all."""
+    g = torch.Generator().manual_seed(4)
+    for trial in range(20):
+        torch.manual_seed(trial)
+        det = MonoDetector(F_IN, 3, {"hidden": 8, "context_dim": 4, "channels": 1 + trial % 3,
+                                     "hard_zero": True}).double()
+        with torch.no_grad():
+            for prm in det.parameters():
+                prm.add_(torch.randn_like(prm) * 2)
+        window = [_snapshot(g, lag) for lag in (2, 1, 0)]
+        new = [_injected(s, g) for s in window]
+        with torch.no_grad():  # shift the own score so that about half of the added flows are not flagged
+            added = torch.cat([s_new.num_raw[len(s.y):] for s, s_new in zip(window, new)]).double()
+            det.own.bias -= det.own(det.enc(added)).median()
+        d0 = det.forward_inputs(window, [s.num_raw.double() for s in window])
+        d1 = det.forward_inputs(new, [s.num_raw.double() for s in new])[: len(d0)]
+        assert torch.all(d1 >= d0 - 1e-9 * d0.abs().clamp(min=1)), "adding flows lowered a detection score"
+        quiet, n_quiet = [], 0  # the same windows with only the added flows that have own score <= 0
+        for s, s_new in zip(window, new):
+            e = len(s.y)
+            with torch.no_grad():
+                # clearly below 0: a flow at a = 0 +- 1e-14 may land on either side in another batch
+                keep = det.own(det.enc(s_new.num_raw[e:].double())).squeeze(-1) < -1e-6
+            n_quiet += int(keep.sum())
+            quiet.append(add_flows(s, s_new.hosts[s_new.src[e:]][keep], s_new.hosts[s_new.dst[e:]][keep],
+                                   s_new.num_raw[e:][keep], s_new.cat[e:][keep]))
+        assert n_quiet > 0
+        d2 = det.forward_inputs(quiet, [s.num_raw.double() for s in quiet])[: len(d0)]
+        assert torch.allclose(d2, d0, rtol=1e-12, atol=1e-10), "an unflagged added flow changed a score"
+
+
 def test_detect_attribute_flags_exactly_when_detector_is_positive():
     g = torch.Generator().manual_seed(2)
     torch.manual_seed(0)

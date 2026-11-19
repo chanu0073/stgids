@@ -7,6 +7,8 @@
 #   stgids_mono8_or  stgids_mono8, but a flow is also flagged when STGIDS predicts an attack
 #   stgids_injaug_mono8  the same detector + attack types from the injection-augmented STGIDS
 #                    (stgids_injaug_mono of run_injection.sh with 8 channels; needs stgids_injaug)
+#   stgids_mono8_hardzero  stgids_mono8, but flows with own score <= 0 add nothing to the host
+#                    statistics (ablation; see scripts/run_hardzero.sh)
 # Usage: bash scripts/run_variants.sh configs/nf_unsw_nb15_v3.yaml runs/unsw_a100 [max test windows]
 #   env DATA, SET, EVAL as in run_injection.sh; ONLY="<names>" runs only those variants
 set -euo pipefail
@@ -31,3 +33,4 @@ run stgids_mono8    "$OUT/stgids/model.pt"               detector.channels=8
 run mlpadv_mono8    "$OUT/baselines/model_mlp_adv.pt"    detector.channels=8
 run stgids_mono8_or "$OUT/stgids/model.pt"               detector.channels=8 detector.fusion=or
 run stgids_injaug_mono8 "$OUT/stgids_injaug/model.pt"    detector.channels=8
+run stgids_mono8_hardzero "$OUT/stgids/model.pt"         detector.channels=8 detector.hard_zero=true

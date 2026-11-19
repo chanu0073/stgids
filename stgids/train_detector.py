@@ -16,8 +16,9 @@ Usage:
 
 Detector settings live in a separate `detector` config section (not in config.DEFAULTS, so the
 fingerprints of existing runs do not change); unset keys take the values of DET_DEFAULTS. Optional:
-detector.channels (evidence channels, default 1) and detector.fusion ("detector" | "or", default
-"detector"); they are recorded only when set, so earlier models keep their fingerprints.
+detector.channels (evidence channels, default 1), detector.fusion ("detector" | "or", default
+"detector") and detector.hard_zero (ablation: flows with own score <= 0 add nothing to the host
+statistics, default false); they are recorded only when set, so earlier models keep their fingerprints.
 """
 from __future__ import annotations
 
@@ -113,7 +114,7 @@ def main():
             raise SystemExit(f"{typer_path} is neither a graph model nor a neural flow baseline")
         base, typer_model = cfg, {"arch": "flow", "net": name}
     det_model = {k: det[k] for k in ("context", "hidden", "context_dim")}
-    det_model.update({k: det[k] for k in ("channels", "fusion") if k in det})
+    det_model.update({k: det[k] for k in ("channels", "fusion", "hard_zero") if k in det})
     sys_cfg = {**copy.deepcopy(base), "seed": cfg["seed"], "output_dir": str(out), "detector": det,
                "model": {"arch": "detect_attribute", "typer": typer_model, "detector": det_model}}
     fp = "-".join([fingerprint(sys_cfg, ("seed", "model", "graph", "detector")), file_id(data_path),
@@ -141,7 +142,8 @@ def main():
         prm.requires_grad_(False)
     params = list(model.detector.parameters())
     LOG.info(f"detect-attribute model | detector context={det['context']} channels={det.get('channels', 1)} "
-             f"fusion={det.get('fusion', 'detector')} | {sum(q.numel() for q in params):,} trainable parameters | "
+             f"fusion={det.get('fusion', 'detector')} hard_zero={det.get('hard_zero', False)} | "
+             f"{sum(q.numel() for q in params):,} trainable parameters | "
              f"attribution model {typer_path}")
     opt = torch.optim.AdamW(params, lr=det["lr"], weight_decay=det["weight_decay"])
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=det["epochs"])
